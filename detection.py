@@ -7,7 +7,7 @@ import SimpleITK as sitk
 from skimage.draw import circle
 
 
-luna = 'data/luna2016/'
+luna = 'data/luna2016/'  # make sure the paths work!
 file_list = glob(luna + 'subset*/*.mhd')
 
 
@@ -18,6 +18,10 @@ def get_filename(case):
 
 
 def get_nodules(img_file, biggest=False):
+    """Function that returns a list of tuples identifying the nodule locations
+       in a file, where each tuple is (x-coord, y-coord, z-coord, diameter). If
+       biggest=True, returns only biggest nodule in file."""
+    
     mini_df = df_node[df_node['file'] == img_file]
     if len(mini_df) == 0:
         return []
@@ -35,6 +39,13 @@ def get_nodules(img_file, biggest=False):
 
 
 def get_arrays(img_file, biggest=False):
+    """Function that returns 3 lists (masks, large_masks, imgs), where each list is
+       is a list of numpy arrays. The len of each list is equal to the number of
+       nodules in img_file (or 1 if biggest=True); i.e., only one slice is added per
+       nodule. The shape of the arrays is 512x512. Two versions of masks are returned:
+       masks, which identify nodules by circles of twice the diameter of the ground
+       truth; and large_masks, with circles of 4x the ground truth diameter."""
+    
     nodules = get_nodules(img_file, biggest)
     itk_img = sitk.ReadImage(img_file)
     img = sitk.GetArrayFromImage(itk_img)  # zyx
