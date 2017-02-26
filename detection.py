@@ -1,5 +1,7 @@
 """Script to create training data for U-net using the LUNA dataset.
    Saves 3 arrays in the luna directory.
+   This is a modified version of 
+   https://github.com/booz-allen-hamilton/DSB3Tutorial/blob/master/tutorial_code/LUNA_mask_extraction.py
 """
 
 from __future__ import division
