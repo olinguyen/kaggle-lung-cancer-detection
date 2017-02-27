@@ -103,6 +103,25 @@ imgs = imgs[:i, :, :]
 masks = masks[:i, :, :]
 large_masks = large_masks[:i, :, :]
 
+# a few masks have nodule locations outside the 512x512 region for some reason.
+# removing these
+large_masks_new = np.zeros(large_masks.shape)
+masks_new = np.zeros(masks.shape)
+imgs_new = np.zeros(imgs.shape)
+count = 0
+for idx, img in enumerate(imgs):
+    if np.sum(masks[idx]) == 0:
+        continue
+    imgs_new[count] = (img - np.mean(img))/np.std(img)
+    masks_new[count] = masks[idx]
+    large_masks_new[count] = large_masks[idx]
+    count += 1
+
+imgs = imgs_new[:count]
+masks = masks_new[:count]
+large_masks = large_masks_new[:count]
+
+# shuffle data
 np.random.seed(23)
 idx = np.random.permutation(imgs.shape[0])
 imgs = imgs[idx, :, :]
