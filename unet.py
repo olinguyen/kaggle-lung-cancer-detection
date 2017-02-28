@@ -8,7 +8,7 @@ from keras.optimizers import Adam
 from keras import backend as K
 
 
-luna = '/home/a6elkhat/Documents/databowl/luna/'
+luna = 'databowl/luna/'
 
 
 def dice_coef(y_true, y_pred):
