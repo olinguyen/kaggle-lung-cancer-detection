@@ -102,9 +102,9 @@ ts_imgs = imgs[spl:, np.newaxis, :, :]
 ts_masks = masks[spl:, np.newaxis, :, :]
 del imgs, masks
 
-# unet = get_unet()
-unet = load_model(luna + 'unet9.h5', custom_objects={'dice_coef_loss': dice_coef_loss})
-for i in range(10, 20):
+unet = get_unet()
+#unet = load_model(luna + 'unet9.h5', custom_objects={'dice_coef_loss': dice_coef_loss})
+for i in range(20):
     unet.fit(tr_imgs, tr_masks, batch_size=4, nb_epoch=10, verbose=2)
     unet.save(luna + 'unet%d.h5' % i)
 
