@@ -4,23 +4,25 @@ import pickle
 from glob import glob
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import dicom
-from keras.models import load_model, Model
 from keras import backend as K
 from skimage.feature import hog
 from skimage.feature import local_binary_pattern
 from segmentation import segment_lungs
 from skimage import measure
 from score import false_positive
-from keras.layers import Dense, Convolution2D, MaxPooling2D, UpSampling2D, Flatten, Dropout, Reshape
-from keras.models import Sequential
-from keras.optimizers import Adam
 from sklearn.cluster import k_means
-from keras.regularizers import l1
 from sklearn.svm import SVC
+from keras.models import load_model
+from scipy.ndimage.measurements import label
+import cv2
 
-databowl = 'databowl/'
+import time
+
+databowl = '/media/data/kaggle/'
+kaggle_datafolder = '/media/data/kaggle/'
+kaggle_metadata = './data/kaggle/'
+K.set_image_dim_ordering('th')
 
 
 def get_patch_coord(centroid, patch_size):
@@ -80,6 +82,11 @@ def get_filtered_nodules(imgs, unet):
     return np.array(nodules, dtype=np.float32)
 
 
+def get_masks(imgs, unet):
+    masks = unet.predict(imgs[:, np.newaxis, :, :], batch_size=4).astype(int)
+    return masks
+
+
 def get_all_nodules(imgs, unet):
     nodules = []
     masks = unet.predict(imgs[:, np.newaxis, :, :], batch_size=4).astype(int)
@@ -113,23 +120,206 @@ def dice_coef_loss(y_true, y_pred):
     return -1*dice_coef(y_true, y_pred)
 
 
-K.set_image_dim_ordering('th')
+def crop_nodule(img, bbox):
+    padding = 5
+    y_start = np.clip(bbox[0][1] - padding, 0, 512)
+    y_end = np.clip(bbox[1][1] + padding, 0, 512)
+    x_start = np.clip(bbox[0][0] - padding, 0, 512)
+    x_end = np.clip(bbox[1][0] + padding, 0, 512)
+    cropped = img[y_start:y_end, x_start:x_end]
+    cropped = cv2.resize(cropped, (50, 50))
+    return cropped
 
 
-unet = load_model(databowl + 'luna/segmented_lungs_unet1.h5', custom_objects={'dice_coef_loss': dice_coef_loss})
+def draw_labeled_bboxes(img, labels):
+    copied = np.copy(img)
+    bboxes = []
+    # Iterate through all detected nodules
+    for nodule_number in range(1, labels[1]+1):
+        # Find pixels with each nodule_number label value
+        nonzero = (labels[0] == nodule_number).nonzero()
+        # Identify x and y values of those pixels
+        nonzeroy = np.array(nonzero[0])
+        nonzerox = np.array(nonzero[1])
+        # Define a bounding box based on min/max x and y
+        width = np.max(nonzerox) - np.min(nonzerox)
+        height = np.max(nonzerox) - np.max(nonzeroy)
 
-df = pd.read_csv(databowl + 'stage1_labels.csv')
-ids = df['id'].tolist()
-patients = glob(databowl + 'stage1/*')
-tr_patients = [patient for patient in patients if patient.split('/')[-1] in ids]
-np.random.shuffle(tr_patients)
-tr_labels = [df.cancer[df.id == patient.split('/')[-1]].values[0] for patient in tr_patients]
-ts_patients = [patient for patient in patients if patient.split('/')[-1] not in ids]
+        if width > 5 and height > 5:
+            bbox = ((np.min(nonzerox), np.min(nonzeroy)), (np.max(nonzerox), np.max(nonzeroy)))
+            bboxes.append(bbox)
+            # Draw the box on the image
+            #cv2.rectangle(img, bbox[0], bbox[1], (10, 10, 10), 2)
+            #copied = cv2.addWeighted(copied, 1.0, img, 1.0, 0.)
 
-tr_nodules = []
-for idx, patient in enumerate(tr_patients):
-    imgs = read_imgs(patient)
-    tr_nodules.append(get_filtered_nodules(imgs, unet))
+    # Return the image
+    return copied, bboxes
 
 
+def test_nodules():
+    unet = load_model(databowl + 'segmented_lungs_unet1.h5', custom_objects={'dice_coef_loss': dice_coef_loss})
 
+    df = pd.read_csv('./data/kaggle/stage1_labels.csv')
+    test_df = pd.read_csv('./data/kaggle/stage1_sample_submission.csv')
+
+    tr_nodules = []
+
+    for idx, patient in enumerate(test_df['id']):
+        print(idx, patient)
+        imgs = read_imgs('/media/data/kaggle/stage1/' + patient)
+        tr_nodules.append((get_filtered_nodules(imgs, unet)), patient)
+
+    np.save('./test_nodules.npy', np.array(tr_nodules))
+
+
+def train_masks():
+    unet = load_model(databowl + 'segmented_lungs_unet1.h5', custom_objects={'dice_coef_loss': dice_coef_loss})
+    train_df = pd.read_csv('./data/kaggle/stage1_labels.csv')
+    num_samples = len(train_df)
+    batch_size = 50
+    batch = []
+    print("Number of training samples:", num_samples)
+    train_df.head()
+    for i in range(28):
+        nodules = []
+        batch_start = i * batch_size
+        batch_end = batch_start + batch_size
+        ts = time.time()
+        for idx, patient in train_df[batch_start:batch_end].iterrows():
+            if idx % 5 == 0:
+                print(i, idx, patient)
+            slices = read_imgs('/media/data/kaggle/stage1/' + patient['id'])
+            masks = get_masks(slices, unet)
+            nodules.append((masks, patient['id'], patient['cancer']))
+            del masks
+            del slices
+        np.save('/media/data/kaggle/masks/train_masks%d.npy' % i, np.array(nodules))
+        te = time.time()
+        print("Batch runtime:", te - ts)
+
+
+def crop_nodules_heatmap():
+    unet = load_model(databowl + 'segmented_lungs_unet1.h5', custom_objects={'dice_coef_loss': dice_coef_loss})
+    train_df = pd.read_csv('./data/kaggle/stage1_labels.csv')
+    num_samples = len(train_df)
+    batch_size = 200
+    batch = []
+    print("Number of training samples:", num_samples)
+    for i in range(7):
+        nodules = []
+        batch_start = i * batch_size
+        batch_end = batch_start + batch_size
+        ts = time.time()
+        for idx, patient in train_df[batch_start:batch_end].iterrows():
+            if idx % 50 == 0:
+                print(i, idx, patient)
+            patient_nodules = []
+            # Get all slice masks from patient
+            slices = read_imgs('/media/data/kaggle/stage1/' + patient['id'])
+
+            # get predicted masks
+            predicted = get_masks(slices, unet)
+
+            # Create heatmap from all slices
+            threshold = 2.0
+            heatmap = np.sum(predicted, axis=0)[0]
+
+            # threshold to keep hottest regions
+            thresh_heatmap = np.copy(heatmap)
+            thresh_heatmap[thresh_heatmap < threshold] = 0
+            xy = thresh_heatmap.nonzero()
+            thresh_heatmap[xy[0], xy[1]] = 1.
+
+            # get bounding boxes on hottest nodule regions
+            labels = label(thresh_heatmap)
+            img_bbox, bboxes = draw_labeled_bboxes(np.copy(thresh_heatmap), labels)
+
+            padding = 5
+            # for each slice, keep only if dice coefficient > threshold
+            for idx, predicted_slice in enumerate(predicted):
+                for bbox in bboxes:
+                    # isolate nodules
+                    tmp = np.zeros((512, 512))
+                    y_start = np.clip(bbox[0][1] - padding, 0, 512)
+                    y_end = np.clip(bbox[1][1] + padding, 0, 512)
+                    x_start = np.clip(bbox[0][0] - padding, 0, 512)
+                    x_end = np.clip(bbox[1][0] + padding, 0, 512)
+                    tmp[y_start:y_end, x_start:x_end] = 1
+
+                    single_nodule_mask = np.logical_and(thresh_heatmap, tmp)
+
+                    # Check if nodule covers area
+                    dice_coefficient = dice_coef_np(single_nodule_mask, predicted_slice[0])
+                    if dice_coefficient >= 0.40:
+                        cropped_nodule = crop_nodule(slices[idx], bbox)
+                        patient_nodules.append(cropped_nodule)
+
+            nodules.append((np.array(patient_nodules), patient['id'], patient['cancer']))
+            #print("Number of nodules detected for this patient",len(patient_nodules))
+
+        np.save('/media/data/kaggle/masks/cropped_heatmap_nodules_heat2_dice40%d.npy' % i, np.array(nodules))
+        te = time.time()
+        print("Batch runtime:", te - ts)
+
+
+def crop_test_nodules():
+    unet = load_model(databowl + 'segmented_lungs_unet1.h5', custom_objects={'dice_coef_loss': dice_coef_loss})
+    test_df = pd.read_csv('./data/kaggle/stage1_sample_submission.csv')
+    num_samples = len(test_df)
+    print("Number of testing samples:", num_samples)
+    ts = time.time()
+    nodules = []
+    for idx, patient in test_df.iterrows():
+        if idx % 25 == 0:
+            print(idx, patient, len(nodules))
+        patient_nodules = []
+        # Get all slice masks from patient
+        slices = read_imgs('/media/data/kaggle/stage1/' + patient['id'])
+
+        # get predicted masks
+        predicted = get_masks(slices, unet)
+
+        # Create heatmap from all slices
+        threshold = 2.0
+        heatmap = np.sum(predicted, axis=0)[0]
+
+        # threshold to keep hottest regions
+        thresh_heatmap = np.copy(heatmap)
+        thresh_heatmap[thresh_heatmap < threshold] = 0
+        xy = thresh_heatmap.nonzero()
+        thresh_heatmap[xy[0], xy[1]] = 1.
+
+        # get bounding boxes on hottest nodule regions
+        labels = label(thresh_heatmap)
+        img_bbox, bboxes = draw_labeled_bboxes(np.copy(thresh_heatmap), labels)
+
+        padding = 5
+        # for each slice, keep only if dice coefficient > threshold
+        for idx, predicted_slice in enumerate(predicted):
+            for bbox in bboxes:
+                # isolate nodules
+                tmp = np.zeros((512, 512))
+                y_start = np.clip(bbox[0][1] - padding, 0, 512)
+                y_end = np.clip(bbox[1][1] + padding, 0, 512)
+                x_start = np.clip(bbox[0][0] - padding, 0, 512)
+                x_end = np.clip(bbox[1][0] + padding, 0, 512)
+                tmp[y_start:y_end, x_start:x_end] = 1
+
+                single_nodule_mask = np.logical_and(thresh_heatmap, tmp)
+
+                # Check if nodule covers area
+                dice_coefficient = dice_coef_np(single_nodule_mask, predicted_slice[0])
+                if dice_coefficient >= 0.40:
+                    cropped_nodule = crop_nodule(slices[idx], bbox)
+                    patient_nodules.append(cropped_nodule)
+
+        nodules.append((np.array(patient_nodules), patient['id']))
+        #print("Number of nodules detected for this patient",len(patient_nodules))
+
+    np.save(kaggle_datafolder + 'masks/test_cropped_heatmap_nodules_heat2_dice40.npy', np.array(nodules))
+    te = time.time()
+    print("Batch runtime:", te - ts)
+
+
+if __name__ == "__main__":
+    crop_test_nodules()
